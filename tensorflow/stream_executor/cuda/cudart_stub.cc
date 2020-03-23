@@ -25,7 +25,11 @@ void* GetDsoHandle() {
   static auto handle = []() -> void* {
     auto handle_or =
         stream_executor::internal::DsoLoader::GetCudaRuntimeDsoHandle();
-    if (!handle_or.ok()) return nullptr;
+    if (!handle_or.ok()) {
+      LOG(INFO) << "Ignore above cudart dlerror if you do not have a GPU set "
+                   "up on your machine.";
+      return nullptr;
+    }
     return handle_or.ValueOrDie();
   }();
   return handle;
@@ -49,10 +53,16 @@ cudaError_t GetSymbolNotFoundError() {
 // A bunch of new symbols were introduced in version 10
 #if CUDART_VERSION <= 9020
 #include "tensorflow/stream_executor/cuda/cuda_runtime_9_0.inc"
-#elif CUDART_VERSION < 10010
+#elif CUDART_VERSION == 10000
 #include "tensorflow/stream_executor/cuda/cuda_runtime_10_0.inc"
-#else
+#elif CUDART_VERSION == 10010
 #include "tensorflow/stream_executor/cuda/cuda_runtime_10_1.inc"
+#elif CUDART_VERSION == 10020
+#include "tensorflow/stream_executor/cuda/cuda_runtime_10_2.inc"
+#elif CUDART_VERSION == 11000
+#include "tensorflow/stream_executor/cuda/cuda_runtime_11_0.inc"
+#else
+#error "We have no wrapper for this version."
 #endif
 #undef __dv
 #undef __CUDA_DEPRECATED

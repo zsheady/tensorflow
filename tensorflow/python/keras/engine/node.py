@@ -18,7 +18,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.python.framework import ops
 from tensorflow.python.keras import backend
+from tensorflow.python.keras.engine import base_layer_utils
 from tensorflow.python.util import nest
 
 
@@ -74,6 +76,12 @@ class Node(object):
       raise ValueError('`outbound_layer` should be a layer instance, '
                        'not a list, tuple, or, dict.')
 
+    # These arguments are user-provided. Copy them here so that future
+    # user modifications do not affect the node's metadata.
+    input_tensors = nest.map_structure(lambda t: t, input_tensors)
+    output_tensors = nest.map_structure(lambda t: t, output_tensors)
+    arguments = nest.map_structure(lambda t: t, arguments)
+
     # this is the layer that takes a nested structure of input tensors
     # and turns them into a nested structure of output tensors.
     # the current node will be added to
@@ -110,6 +118,15 @@ class Node(object):
     # Optional keyword arguments to layer's `call`.
     self.arguments = arguments
 
+    # Create Keras History for any Keras Tensors in `arguments`.
+    tensor_arguments = [
+        t for t in nest.flatten(self.arguments) if isinstance(t, ops.Tensor)
+    ]
+    for tensor_argument in tensor_arguments:
+      if base_layer_utils.needs_keras_history(
+          tensor_argument, ignore_call_context=True):
+        base_layer_utils.create_keras_history(tensor_argument)
+
     # Add nodes to all layers involved.
     for layer in nest.flatten(inbound_layers):
       if layer is not None:
@@ -120,15 +137,52 @@ class Node(object):
     # accessor here.
     outbound_layer.inbound_nodes.append(self)
 
-  def iterate_inbound(self):
+  def iterate_inbound(self, include_arguments=False):
     """Returns a list of tuples representing the inbound data.
+
+    Arguments:
+      include_arguments: Whether to also iterate over any Keras Tensors
+        passed as args, kwargs.
 
     Returns:
       List of tuples like: (inbound_layer, node_index, tensor_index, tensor).
     """
-    return zip(
-        nest.flatten(self.inbound_layers), nest.flatten(self.node_indices),
-        nest.flatten(self.tensor_indices), nest.flatten(self.input_tensors))
+    inputs_inbound = list(
+        zip(
+            nest.flatten(self.inbound_layers),
+            nest.flatten(self.node_indices),
+            nest.flatten(self.tensor_indices),
+            nest.flatten(self.input_tensors)))
+
+    if include_arguments:
+      keras_tensor_arguments = [
+          kt for kt in nest.flatten(self.arguments)
+          if hasattr(kt, '_keras_history')
+      ]
+
+      def _get_inbound(keras_tensor):
+        kh = keras_tensor._keras_history
+        return kh.layer, kh.node_index, kh.tensor_index, keras_tensor
+
+      arguments_inbound = nest.map_structure(_get_inbound,
+                                             keras_tensor_arguments)
+
+      return inputs_inbound + arguments_inbound
+    else:
+      return inputs_inbound
+
+  def _get_all_node_dependencies(self):
+    """Returns all of the nodes this node immediately depends on."""
+    node_deps = []
+    for layer, node_index, _, _ in self.iterate_inbound():
+      node_deps.append(layer._inbound_nodes[node_index])
+
+    for arg in nest.flatten(self.arguments):
+      if isinstance(arg, ops.Tensor) and hasattr(arg, '_keras_history'):
+        kh = arg._keras_history
+        node_deps.append(kh.layer._inbound_nodes[kh.node_index])
+
+    return node_deps
 
   def get_config(self):
     inbound_names = nest.map_structure(

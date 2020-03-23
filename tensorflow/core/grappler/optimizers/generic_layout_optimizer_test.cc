@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/const_op.h"
 #include "tensorflow/cc/ops/nn_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/grappler/clusters/cluster.h"
@@ -29,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/devices.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/utils/graph_view.h"
+#include "tensorflow/core/grappler/utils/grappler_test.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
@@ -117,7 +119,7 @@ Output SimpleConv2DBackpropInput(tensorflow::Scope* s, int input_size,
   return conv_backprop_input;
 }
 
-class GenericLayoutOptimizerTest : public ::testing::Test {
+class GenericLayoutOptimizerTest : public GrapplerTest {
  protected:
   void SetUp() override {
     bool gpu_available = GetNumAvailableGPUs() > 0;
@@ -177,9 +179,9 @@ void VerifyDataFormatAttributeMatch(const utils::NodeView* node,
 }
 
 TEST_F(GenericLayoutOptimizerTest, OptimizeSimpleConv2DGraph) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   // A simple graph contains 1 "NHWC" Conv2D node, 2 input and 1 output nodes.
   Scope scope = Scope::NewRootScope();
 
@@ -243,9 +245,9 @@ TEST_F(GenericLayoutOptimizerTest, PreserveFetch) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, EmptyDevice) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   auto conv = SimpleConv2D(&s, 4, 2, "VALID", "");
   Output fetch = ops::Identity(s.WithOpName("Fetch"), {conv});
@@ -265,9 +267,9 @@ TEST_F(GenericLayoutOptimizerTest, EmptyDevice) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, GPUDevice) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   auto conv =
       SimpleConv2D(&s, 4, 2, "VALID", "/job:w/replica:0/task:0/device:GPU:0");
@@ -288,9 +290,9 @@ TEST_F(GenericLayoutOptimizerTest, GPUDevice) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, CPUDevice) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   auto conv = SimpleConv2D(&s, 4, 2, "VALID", "/CPU:0");
   Output fetch = ops::Identity(s.WithOpName("Fetch"), {conv});
@@ -310,9 +312,9 @@ TEST_F(GenericLayoutOptimizerTest, CPUDevice) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, Connectivity) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   Scope scope = Scope::NewRootScope();
   auto conv = SimpleConv2D(&scope, 4, 2, "VALID", "/device:GPU:0");
   auto i1 = ops::Identity(scope.WithOpName("i1"), conv);
@@ -347,9 +349,9 @@ TEST_F(GenericLayoutOptimizerTest, Connectivity) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, Conv2DBackpropInputNonConstInputSizes) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   Scope s = Scope::NewRootScope();
   auto conv = SimpleConv2DBackpropInput(&s, 7, 2, "SAME", /*dilated=*/false);
   Output fetch = ops::Identity(s.WithOpName("Fetch"), {conv});
@@ -379,9 +381,9 @@ TEST_F(GenericLayoutOptimizerTest, Conv2DBackpropInputNonConstInputSizes) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, Conv2DDataFormatVecPermuteCollapse) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   Scope scope = Scope::NewRootScope().WithDevice("/device:GPU:0");
   auto conv = SimpleConv2D(&scope, 4, 2, "VALID", "/device:GPU:0");
   auto shape = ops::Shape(scope.WithOpName("shape"), conv);
@@ -432,9 +434,9 @@ TEST_F(GenericLayoutOptimizerTest, Conv2DDataFormatVecPermuteCollapse) {
 }
 
 TEST_F(GenericLayoutOptimizerTest, DoNotPruneNonAddedCancellableTransposes) {
-#if !GOOGLE_CUDA
-  GTEST_SKIP() << "CUDA is not enabled";
-#endif  // !GOOGLE_CUDA
+#if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
+#endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   GrapplerItem item;
   {
     Scope scope = Scope::NewRootScope().WithDevice("/device:GPU:0");
@@ -472,7 +474,6 @@ TEST_F(GenericLayoutOptimizerTest, DoNotPruneNonAddedCancellableTransposes) {
   utils::GraphView graph_view(&output, &status);
   TF_ASSERT_OK(status);
 
-  LOG(INFO) << graph_view.graph()->DebugString();
   auto* input_node = graph_view.GetNode("input");
   ASSERT_NE(input_node, nullptr);
 
@@ -524,6 +525,73 @@ TEST_F(GenericLayoutOptimizerTest, DoNotPruneNonAddedCancellableTransposes) {
   ASSERT_EQ(output_node->NumRegularFanins(), 1);
   VerifyRegularFaninMatch(output_node, 0, output_out_transpose_node->GetName(),
                           0);
+}
+
+TEST_F(GenericLayoutOptimizerTest, CancelTransposeAroundPad) {
+  using test::function::NDef;
+
+  GenericLayoutOptimizer optimizer(RewriterConfig::AGGRESSIVE);
+
+  const Tensor kPermuteNhwcToNchw = test::AsTensor<int32>({0, 3, 1, 2});
+  const Tensor kPermuteNchwToNhwc = test::AsTensor<int32>({0, 2, 3, 1});
+  const Tensor kPad = test::AsTensor<int32>({1, 2, 3, 4, 5, 6, 7, 8}, {4, 2});
+
+  GrapplerItem item;
+  item.graph = test::function::GDef({
+      NDef("x", "Placeholder", {}, {{"dtype", DT_FLOAT}}),
+
+      NDef("paddings", "Const", {}, {{"dtype", DT_INT32}, {"value", kPad}}),
+      NDef("perm_nhwc_to_nchw", "Const", {},
+           {{"dtype", DT_INT32}, {"value", kPermuteNhwcToNchw}}),
+      NDef("perm_nchw_to_nhwc", "Const", {},
+           {{"dtype", DT_INT32}, {"value", kPermuteNchwToNhwc}}),
+
+      NDef("transpose_0", "Transpose", {"x", "perm_nhwc_to_nchw"},
+           {{"T", DT_FLOAT}, {"Tperm", DT_INT32}}),
+      NDef("pad", "Pad", {"transpose_0", "paddings"},
+           {{"T", DT_FLOAT}, {"Tpaddings", DT_INT32}}),
+      NDef("transpose_1", "Transpose", {"pad", "perm_nchw_to_nhwc"},
+           {{"T", DT_FLOAT}, {"Tperm", DT_INT32}}),
+      NDef("transpose_2", "Transpose", {"pad", "perm_nchw_to_nhwc"},
+           {{"T", DT_FLOAT}, {"Tperm", DT_INT32}}),
+  });
+
+  GraphDef output;
+  TF_EXPECT_OK(optimizer.Optimize(virtual_cluster_.get(), item, &output));
+
+  const Tensor kPermutedPaddings =
+      test::AsTensor<int32>({1, 2, 5, 6, 7, 8, 3, 4}, {4, 2});
+
+  GraphDef expected = test::function::GDef({
+      NDef("x", "Placeholder", {}, {{"dtype", DT_FLOAT}}),
+
+      NDef("paddings", "Const", {},
+           {{"dtype", DT_INT32}, {"value", kPermutedPaddings}}),
+      NDef("perm_nhwc_to_nchw", "Const", {},
+           {{"dtype", DT_INT32}, {"value", kPermuteNhwcToNchw}}),
+      NDef("perm_nchw_to_nhwc", "Const", {},
+           {{"dtype", DT_INT32}, {"value", kPermuteNchwToNhwc}}),
+
+      // Transpose nodes replaced by Identity nodes.
+      NDef("transpose_0", "Identity", {"x"}, {{"T", DT_FLOAT}}),
+      NDef("pad", "Pad", {"transpose_0", "paddings"},
+           {{"T", DT_FLOAT}, {"Tpaddings", DT_INT32}}),
+      NDef("transpose_1", "Identity", {"pad"}, {{"T", DT_FLOAT}}),
+      NDef("transpose_2", "Identity", {"pad"}, {{"T", DT_FLOAT}}),
+  });
+
+  CompareGraphs(expected, output);
+
+  Tensor x = GenerateRandomTensor<DT_FLOAT>({2, 6, 6, 8});
+  item.fetch = {"transpose_1", "transpose_2"};
+  item.feed.emplace_back("x", x);
+  auto tensors_expected = EvaluateFetchNodes(item);
+  GrapplerItem optimized = item.WithGraph(std::move(output));
+  auto tensors = EvaluateFetchNodes(optimized);
+  ASSERT_EQ(tensors.size(), 2);
+  ASSERT_EQ(tensors_expected.size(), 2);
+  test::ExpectTensorEqual<float>(tensors_expected[0], tensors[0]);
+  test::ExpectTensorEqual<float>(tensors_expected[1], tensors[1]);
 }
 
 // TODO(yanzha): Add more complex Graph for test.

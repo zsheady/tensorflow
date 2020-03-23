@@ -22,7 +22,7 @@ from absl.testing import parameterized
 
 from tensorflow.python import keras
 from tensorflow.python import tf2
-from tensorflow.python.framework import test_util as tf_test_util
+from tensorflow.python.keras import combinations
 from tensorflow.python.keras.layers import normalization as batchnorm_v1
 from tensorflow.python.keras.layers import normalization_v2 as batchnorm_v2
 from tensorflow.python.keras.layers import recurrent as rnn_v1
@@ -30,7 +30,20 @@ from tensorflow.python.keras.layers import recurrent_v2 as rnn_v2
 from tensorflow.python.platform import test
 
 
-@tf_test_util.run_all_in_graph_and_eager_modes
+class SerializableInt(int):
+
+  def __new__(cls, value):
+    return int.__new__(cls, value)
+
+  def get_config(self):
+    return {'value': int(self)}
+
+  @classmethod
+  def from_config(cls, config):
+    return cls(**config)
+
+
+@combinations.generate(combinations.combine(mode=['graph', 'eager']))
 class LayerSerializationTest(parameterized.TestCase, test.TestCase):
 
   def test_serialize_deserialize(self):
@@ -47,6 +60,42 @@ class LayerSerializationTest(parameterized.TestCase, test.TestCase):
     else:
       self.assertEqual(new_layer.kernel_initializer.__class__,
                        keras.initializers.Ones)
+    self.assertEqual(new_layer.units, 3)
+
+  def test_implicit_serialize_deserialize_fails_without_object(self):
+    layer = keras.layers.Dense(
+        SerializableInt(3),
+        activation='relu',
+        kernel_initializer='ones',
+        bias_regularizer='l2')
+    config = keras.layers.serialize(layer)
+    # Because we're passing an unknown class here, deserialization should fail
+    # unless we add SerializableInt to the custom object dict.
+    with self.assertRaisesRegex(ValueError,
+                                'Unknown config_item: SerializableInt.*'):
+      _ = keras.layers.deserialize(config)
+
+  def test_implicit_serialize_deserialize_succeeds_with_object(self):
+    layer = keras.layers.Dense(
+        SerializableInt(3),
+        activation='relu',
+        kernel_initializer='ones',
+        bias_regularizer='l2')
+    config = keras.layers.serialize(layer)
+    # Because we're passing an unknown class here, deserialization should fail
+    # unless we add SerializableInt to the custom object dict.
+    new_layer = keras.layers.deserialize(
+        config, custom_objects={'SerializableInt': SerializableInt})
+    self.assertEqual(new_layer.activation, keras.activations.relu)
+    self.assertEqual(new_layer.bias_regularizer.__class__,
+                     keras.regularizers.L1L2)
+    if tf2.enabled():
+      self.assertEqual(new_layer.kernel_initializer.__class__,
+                       keras.initializers.OnesV2)
+    else:
+      self.assertEqual(new_layer.kernel_initializer.__class__,
+                       keras.initializers.Ones)
+    self.assertEqual(new_layer.units.__class__, SerializableInt)
     self.assertEqual(new_layer.units, 3)
 
   @parameterized.parameters(
@@ -71,7 +120,7 @@ class LayerSerializationTest(parameterized.TestCase, test.TestCase):
 
   @parameterized.parameters(
       [batchnorm_v1.BatchNormalization, batchnorm_v2.BatchNormalization])
-  def test_deserialize_batchnorm_backwards_compatiblity(self, batchnorm_layer):
+  def test_deserialize_batchnorm_backwards_compatibility(self, batchnorm_layer):
     layer = batchnorm_layer(
         momentum=0.9, beta_initializer='zeros', gamma_regularizer='l2')
     config = keras.layers.serialize(layer)

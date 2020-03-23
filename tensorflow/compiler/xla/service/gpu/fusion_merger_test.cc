@@ -15,6 +15,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/fusion_merger.h"
 
+#include <vector>
+
+#include "absl/types/span.h"
+#include "tensorflow/compiler/xla/service/gpu/gpu_fusible.h"
 #include "tensorflow/compiler/xla/service/gpu/instruction_fusion.h"
 #include "tensorflow/compiler/xla/service/hlo_matchers.h"
 #include "tensorflow/compiler/xla/service/hlo_parser.h"
@@ -105,9 +109,9 @@ ENTRY MergeSharedFusionInstruction.Computation0 {
 // This is because the bytes read by Fusion2 (when replicated if the instruction
 // is merged into Fusion0 and Fusion1) would exceed the bytes transferred
 // threshold.
-TEST_F(FusionMergerTest, BytesTransferredThresholdExeceeded) {
+TEST_F(FusionMergerTest, BytesTransferredThresholdExceeded) {
   auto module = ParseAndReturnVerifiedModule(R"(
-HloModule BytesTransferredThresholdExeceeded
+HloModule BytesTransferredThresholdExceeded
 
 comp.2 {
   state.param_1.1 = (f32[4]{0}, f32[4]{0}, f32[4]{0}, f32[4]{0}) parameter(0)
@@ -134,7 +138,7 @@ comp {
   ROOT add.5 = f32[4]{0} add(multiply.2, constant.param_1.1)
 }
 
-ENTRY BytesTransferredThresholdExeceeded.Computation2 {
+ENTRY BytesTransferredThresholdExceeded.Computation2 {
   constant = f32[4]{0} constant({1, 1, 1, 1})
   state = (f32[4]{0}, f32[4]{0}, f32[4]{0}, f32[4]{0}) parameter(0)
   fusion.2 = f32[4]{0} fusion(state), kind=kLoop, calls=comp.2
@@ -153,9 +157,9 @@ ENTRY BytesTransferredThresholdExeceeded.Computation2 {
 // Fusion2 is merged into Fusion0 and Fusion1, because bytes read from Param by
 // Fusion2 is reduced for this test which makes the merge operation into its
 // operand below the bytes transferred threshold.
-TEST_F(FusionMergerTest, BytesTransferredThresholdNotExeceeded) {
+TEST_F(FusionMergerTest, BytesTransferredThresholdNotExceeded) {
   auto module = ParseAndReturnVerifiedModule(R"(
-HloModule BytesTransferredThresholdNotExeceeded
+HloModule BytesTransferredThresholdNotExceeded
 
 comp.2 {
   state.param_1.1 = (f32[4]{0}, f32[4]{0}, f32[4]{0}) parameter(0)
@@ -180,7 +184,7 @@ comp {
   ROOT add.4 = f32[4]{0} add(multiply.2, constant.param_1.1)
 }
 
-ENTRY BytesTransferredThresholdNotExeceeded.Computation2 {
+ENTRY BytesTransferredThresholdNotExceeded.Computation2 {
   constant = f32[4]{0} constant({1, 1, 1, 1})
   state = (f32[4]{0}, f32[4]{0}, f32[4]{0}) parameter(0)
   fusion.2 = f32[4]{0} fusion(state), kind=kLoop, calls=comp.2
@@ -260,6 +264,50 @@ TEST_F(FusionMergerTest, WillNotMergeReduceUnfriendlyLayouts) {
       ROOT f2 = f32[] fusion(f1), kind=kInput, calls=f2_computation
     })")
                     .ValueOrDie();
+  EXPECT_FALSE(FusionMerger().Run(module.get()).ValueOrDie());
+}
+
+// Check that we limit the number of operands to fusions we create.
+TEST_F(FusionMergerTest, AvoidsLargeFusion) {
+  constexpr int64 kNumParams = kMaxOperandsAndOutputsPerFusion + 1;
+
+  // Compute
+  //   p0 + p1 + p2 + ... + pn,
+  // Use so many parameters that they do not fit into one fusion.
+  auto module = CreateNewVerifiedModule();
+  HloComputation::Builder b(TestName());
+  Shape shape = ShapeUtil::MakeShape(F32, {10, 100});
+
+  std::vector<HloInstruction*> entry_params;
+
+  for (int64 i = 0; i < kNumParams; ++i) {
+    entry_params.push_back(
+        b.AddInstruction(HloInstruction::CreateParameter(i, shape, "p")));
+  }
+  auto make_fusion = [&](absl::Span<HloInstruction* const> params) {
+    // Build a fusion computation for calculating the sum of all parameters.
+    HloComputation::Builder sub_builder("subcomp");
+    HloInstruction* sum = nullptr;
+    for (int64 i = 0; i < params.size(); ++i) {
+      auto p = sub_builder.AddInstruction(
+          HloInstruction::CreateParameter(i, shape, "p"));
+      if (sum == nullptr) {
+        sum = p;
+      } else {
+        sum = sub_builder.AddInstruction(
+            HloInstruction::CreateBinary(shape, HloOpcode::kAdd, sum, p));
+      }
+    }
+    HloComputation* subcomp =
+        module->AddEmbeddedComputation(sub_builder.Build());
+    return HloInstruction::CreateFusion(
+        shape, HloInstruction::FusionKind::kLoop, params, subcomp);
+  };
+  auto fusion = b.AddInstruction(
+      make_fusion(absl::MakeSpan(entry_params)
+                      .subspan(0, kMaxOperandsAndOutputsPerFusion)));
+  b.AddInstruction(make_fusion({entry_params.back(), fusion}));
+  module->AddEntryComputation(b.Build());
   EXPECT_FALSE(FusionMerger().Run(module.get()).ValueOrDie());
 }
 

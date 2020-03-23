@@ -19,6 +19,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/lite/context.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/toco/tflite/op_version.h"
 #include "tensorflow/lite/toco/tflite/operator.h"
 #include "tensorflow/lite/toco/tflite/types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
@@ -38,9 +39,11 @@ using ::tflite::BuiltinOperator_CUSTOM;
 using ::tflite::BuiltinOperator_MAX;
 using ::tflite::BuiltinOperator_MIN;
 using ::tflite::CreateBuffer;
+using ::tflite::CreateMetadata;
 using ::tflite::CreateModel;
 using ::tflite::CreateOperator;
 using ::tflite::CreateTensor;
+using ::tflite::Metadata;
 using ::tflite::Operator;
 using ::tflite::OperatorCode;
 using ::tflite::SubGraph;
@@ -50,7 +53,7 @@ namespace {
 
 // Check if a TensorFlow Op is a control flow op by its name.
 bool IsControlFlowOp(const string& tensorflow_op) {
-  // Technically this is equalivent to `::tensorflow::Node::IsControlFlow()`.
+  // Technically this is equivalent to `::tensorflow::Node::IsControlFlow()`.
   // It requires to construct a `::tensorflow::Graph` to use that helper
   // function, so we simply hardcode the list of control flow ops here.
   if (tensorflow_op == "Switch" || tensorflow_op == "RefSwitch" ||
@@ -387,7 +390,7 @@ Offset<Vector<Offset<Operator>>> ExportOperators(
       mutating_input_variables = tflite_op->GetMutatingInputVariables(*op);
 
       if (!mutating_input_variables.empty()) {
-        for (size_t i = 0; i < op->inputs.size(); ++i) {
+        for (uint32_t i = 0; i < op->inputs.size(); ++i) {
           if (!mutating_input_variables[i]) {
             continue;
           }
@@ -456,14 +459,27 @@ void ParseControlFlowErrors(std::set<string>* custom_ops,
   }
 }
 
+// Exports a string buffer that contains the model's minimum required runtime
+// version.
+void ExportModelVersionBuffer(
+    const Model& model, std::vector<Offset<Vector<uint8_t>>>* buffers_to_write,
+    FlatBufferBuilder* builder) {
+  const std::string min_runtime = GetMinimumRuntimeVersionForModel(model);
+  buffers_to_write->push_back(builder->CreateVector(
+      reinterpret_cast<const uint8_t*>(min_runtime.data()),
+      min_runtime.size()));
+}
+
 tensorflow::Status Export(
     const Model& model, string* output_file_contents,
     const ExportParams& params,
     const std::map<OperatorType, std::unique_ptr<BaseOperator>>& ops_by_type) {
   for (const string& input_array : model.GetInvalidInputArrays()) {
     if (model.HasArray(input_array)) {
-      return tensorflow::errors::InvalidArgument(absl::StrCat(
-          "Placeholder ", input_array, " should be specied by input_arrays."));
+      return tensorflow::errors::InvalidArgument(
+          absl::StrCat("Placeholder ", input_array,
+                       " should be specified by "
+                       "input_arrays."));
     }
   }
 
@@ -612,11 +628,20 @@ tensorflow::Status Export(
         "not implemented yet.");
   }
 
+  // Write the minimum required runtime version into metadata.
+  auto metadata =
+      CreateMetadata(builder, builder.CreateString("min_runtime_version"),
+                     buffers_to_write.size());
+  ExportModelVersionBuffer(model, &buffers_to_write, &builder);
+  std::vector<flatbuffers::Offset<Metadata>> metadatas = {metadata};
+
   auto buffers = ExportBuffers(model, buffers_to_write, &builder);
   auto description = builder.CreateString("TOCO Converted.");
+
   auto new_model_location =
       CreateModel(builder, TFLITE_SCHEMA_VERSION, op_codes,
-                  builder.CreateVector(subgraphs), description, buffers);
+                  builder.CreateVector(subgraphs), description, buffers,
+                  /* metadata_buffer */ 0, builder.CreateVector(metadatas));
   ::tflite::FinishModelBuffer(builder, new_model_location);
 
   if (params.quantize_weights == QuantizedBufferType::NONE) {

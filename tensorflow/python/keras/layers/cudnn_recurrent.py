@@ -110,9 +110,10 @@ class _CuDNNRNN(RNN):
     output, states = self._process_batch(inputs, initial_state)
 
     if self.stateful:
-      updates = []
-      for i in range(len(states)):
-        updates.append(state_ops.assign(self.states[i], states[i]))
+      updates = [
+          state_ops.assign(self_state, state)
+          for self_state, state in zip(self.states, states)
+      ]
       self.add_update(updates)
 
     if self.return_state:
@@ -293,13 +294,16 @@ class CuDNNGRU(_CuDNNRNN):
         ],
         shape=self._vector_shape)
 
-    outputs, h, _, _ = gen_cudnn_rnn_ops.cudnn_rnn(
-        inputs,
-        input_h=input_h,
-        input_c=0,
-        params=params,
-        is_training=True,
-        rnn_mode='gru')
+    args = {
+        'input': inputs,
+        'input_h': input_h,
+        'input_c': 0,
+        'params': params,
+        'is_training': True,
+        'rnn_mode': 'gru',
+    }
+
+    outputs, h, _, _, _ = gen_cudnn_rnn_ops.cudnn_rnnv2(**args)
 
     if self.stateful or self.return_state:
       h = h[0]
@@ -492,12 +496,15 @@ class CuDNNLSTM(_CuDNNRNN):
         ],
         shape=self._vector_shape)
 
-    outputs, h, c, _ = gen_cudnn_rnn_ops.cudnn_rnn(
-        inputs,
-        input_h=input_h,
-        input_c=input_c,
-        params=params,
-        is_training=True)
+    args = {
+        'input': inputs,
+        'input_h': input_h,
+        'input_c': input_c,
+        'params': params,
+        'is_training': True,
+    }
+
+    outputs, h, c, _, _ = gen_cudnn_rnn_ops.cudnn_rnnv2(**args)
 
     if self.stateful or self.return_state:
       h = h[0]

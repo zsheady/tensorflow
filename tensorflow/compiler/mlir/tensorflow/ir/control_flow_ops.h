@@ -23,9 +23,10 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_CONTROL_FLOW_OPS_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_CONTROL_FLOW_OPS_H_
 
-#include "mlir/IR/Dialect.h"  // TF:local_config_mlir
-#include "mlir/IR/OpDefinition.h"  // TF:local_config_mlir
-#include "mlir/IR/Types.h"  // TF:local_config_mlir
+#include "mlir/IR/Dialect.h"  // TF:llvm-project
+#include "mlir/IR/OpDefinition.h"  // TF:llvm-project
+#include "mlir/IR/Types.h"  // TF:llvm-project
+#include "mlir/Interfaces/SideEffects.h"  // TF:llvm-project
 
 namespace mlir {
 namespace TFControlFlow {
@@ -35,10 +36,10 @@ class TFControlFlowDialect : public Dialect {
   explicit TFControlFlowDialect(MLIRContext *context);
 
   // Parses a type registered to this dialect.
-  Type parseType(StringRef tyData, Location loc) const override;
+  Type parseType(DialectAsmParser &parser) const override;
 
   // Prints a type registered to this dialect.
-  void printType(Type type, raw_ostream &os) const override;
+  void printType(Type type, DialectAsmPrinter &os) const override;
 };
 
 namespace TensorFlowControlTypes {
@@ -65,7 +66,7 @@ class TFControlType : public Type::TypeBase<TFControlType, Type> {
 // tensor needs its own _tf.Enter to be made available inside the while loop.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // This is defined in Tensorflow as:
 //
@@ -84,23 +85,26 @@ class TFControlType : public Type::TypeBase<TFControlType, Type> {
 // Note: Additional result corresponds to the control output.
 class EnterOp
     : public Op<EnterOp, OpTrait::AtLeastNOperands<1>::Impl,
-                OpTrait::NResults<2>::Impl, OpTrait::HasNoSideEffect> {
+                OpTrait::NResults<2>::Impl, MemoryEffectOpInterface::Trait> {
  public:
   using Op::Op;
 
   static StringRef getOperationName() { return "_tf.Enter"; }
 
-  Value *getData() { return getOperand(0); }
-  void setData(Value *value) { setOperand(0, value); }
+  Value getData() { return getOperand(0); }
+  void setData(Value value) { setOperand(0, value); }
 
   LogicalResult verify();
+
+  // EnterOp has no side-effects.
+  void getEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &) {}
 };
 
 // The "_tf.Merge" operation takes a list of input operands and returns a value
 // of the operand type along with the index of the first match encountered.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // This is defined in TensorFlow as:
 //
@@ -130,7 +134,7 @@ class MergeOp : public Op<MergeOp, OpTrait::VariadicOperands,
 // of a while loop. Each loop variable needs its own NextIteration op.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // NextIteration op is broken into _tf.NextIteration.sink and
 // _tf.NextIteration.source because NextIteration is a back-edge in Tensorflow
@@ -172,8 +176,8 @@ class NextIterationSinkOp
 
   static StringRef getOperationName() { return "_tf.NextIteration.sink"; }
 
-  Value *getData() { return getOperand(0); }
-  void setData(Value *value) { setOperand(0, value); }
+  Value getData() { return getOperand(0); }
+  void setData(Value value) { setOperand(0, value); }
 
   LogicalResult verify();
 };
@@ -182,7 +186,7 @@ class NextIterationSinkOp
 // Tensorflow while loops.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // This is defined in Tensorflow as:
 //
@@ -197,22 +201,25 @@ class NextIterationSinkOp
 // Note: Additional result corresponds to the control output.
 class LoopCondOp
     : public Op<LoopCondOp, OpTrait::AtLeastNOperands<1>::Impl,
-                OpTrait::NResults<2>::Impl, OpTrait::HasNoSideEffect> {
+                OpTrait::NResults<2>::Impl, MemoryEffectOpInterface::Trait> {
  public:
   using Op::Op;
   static StringRef getOperationName() { return "_tf.LoopCond"; }
 
-  Value *getData() { return getOperand(0); }
-  void setData(Value *value) { setOperand(0, value); }
+  Value getData() { return getOperand(0); }
+  void setData(Value value) { setOperand(0, value); }
 
   LogicalResult verify();
+
+  // LoopCondOp has no side-effects.
+  void getEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &) {}
 };
 
 // The "_tf.Switch" operation takes a data operand and a boolean predicate
 // condition, and returns two values matching the type of the data predicate.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // This is defined in TensorFlow as:
 //
@@ -233,11 +240,11 @@ class SwitchOp : public Op<SwitchOp, OpTrait::AtLeastNOperands<2>::Impl,
 
   static StringRef getOperationName() { return "_tf.Switch"; }
 
-  Value *getData() { return getOperand(0); }
-  void setData(Value *value) { setOperand(0, value); }
+  Value getData() { return getOperand(0); }
+  void setData(Value value) { setOperand(0, value); }
 
-  Value *getPredicate() { return getOperand(1); }
-  void setPredicate(Value *value) { setOperand(1, value); }
+  Value getPredicate() { return getOperand(1); }
+  void setPredicate(Value value) { setOperand(1, value); }
 
   LogicalResult verify();
 };
@@ -246,7 +253,7 @@ class SwitchOp : public Op<SwitchOp, OpTrait::AtLeastNOperands<2>::Impl,
 // outside of loop. Each returned tensor needs its own _tf.Exit.
 //
 // More details can be found in Tensorflow Controlflow white paper:
-// http://download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
+// https://storage.googleapis.com/download.tensorflow.org/paper/white_paper_tf_control_flow_implementation_2017_11_1.pdf
 //
 // This is defined in Tensorflow as:
 //
@@ -260,16 +267,20 @@ class SwitchOp : public Op<SwitchOp, OpTrait::AtLeastNOperands<2>::Impl,
 //       (tensor<*xi32>, !_tf.control)
 //
 // Note: Additional result corresponds to the control output.
-class ExitOp : public Op<ExitOp, OpTrait::AtLeastNOperands<1>::Impl,
-                         OpTrait::NResults<2>::Impl, OpTrait::HasNoSideEffect> {
+class ExitOp
+    : public Op<ExitOp, OpTrait::AtLeastNOperands<1>::Impl,
+                OpTrait::NResults<2>::Impl, MemoryEffectOpInterface::Trait> {
  public:
   using Op::Op;
   static StringRef getOperationName() { return "_tf.Exit"; }
 
-  Value *getData() { return getOperand(0); }
-  void setData(Value *value) { setOperand(0, value); }
+  Value getData() { return getOperand(0); }
+  void setData(Value value) { setOperand(0, value); }
 
   LogicalResult verify();
+
+  // ExitOp has no side-effects.
+  void getEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &) {}
 };
 
 }  // namespace TFControlFlow

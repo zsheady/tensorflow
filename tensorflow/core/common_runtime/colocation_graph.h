@@ -37,8 +37,9 @@ class Member {
  public:
   Member() = default;
 
-  Status SetParentAndSupportedDevices(const Node& node,
-                                      const std::vector<DeviceType>& types);
+  Status SetParentAndSupportedDevices(
+      const Node& node, const std::vector<DeviceType>& types,
+      const DeviceNameUtils::ParsedName* local_address_spec);
 
   const DeviceNameUtils::ParsedName& requested_device_name() const {
     return requested_device_name_;
@@ -80,7 +81,11 @@ class Member {
   // not update this. Else returns true and updates this.
   bool MergeSupportedDevices(const Member& other);
 
-  Status AssignDevice(const Node& node, bool allow_soft_placement);
+  Status AssignDevice(const Node& node);
+
+  // If user does not explicitly request XLA device and non-XLA device is
+  // supported for this node, use only the non-XLA device. See b/140896502.
+  void MaybeExcludeXlaDevices();
 
   // Limit the possible devices of this (should be a root) to the device
   // specifications in `devices`.
@@ -203,12 +208,13 @@ class Member {
 class ColocationGraph {
  public:
   // graph, flib_def, and device_set must not be null and must outlive
-  // this ColocationGraph. default_device can be null. If not, must outlive
-  // this.
+  // this ColocationGraph. default_local_device can be null. If not, must
+  // outlive this.
   ColocationGraph(const Graph* graph, const FunctionStack& stack,
                   const FunctionLibraryDefinition* flib_def,
-                  const DeviceSet* device_set, const Device* default_device,
-                  bool allow_soft_placement, bool log_device_placement);
+                  const DeviceSet* device_set,
+                  const Device* default_local_device, bool allow_soft_placement,
+                  bool log_device_placement);
 
   Status Initialize();
 
@@ -254,7 +260,7 @@ class ColocationGraph {
   static std::vector<Device*> FilterSupportedDevices(
       const std::vector<Device*>& devices,
       const PrioritizedDeviceTypeVector& supported_device_types,
-      const Device* default_device);
+      const Device* default_local_device);
 
  private:
   // Adds each node of the Graph to this ColocationGraph as a singleton.
@@ -276,6 +282,14 @@ class ColocationGraph {
   // deems as requiring deep inspection by placer. This is an optimization.
   Status ColocateResourceAndRefEdges(
       std::unordered_set<Node*>* inspection_required);
+
+  // Updates this ColocationGraph by making sure that all nodes having inputs of
+  // a DT_VARIANT data type with a host-only underlying types (e.g. strings) can
+  // be placed only on CPU device. We do that by reverse-DFS traversal from all
+  // nodes that take variant inputs to the node that produces that variant.
+  // TODO(ezhulenev): This function does not yet support "deep op" inspection,
+  // that we have for DT_RESOURCE edges.
+  Status AddHostOnlyDataTypesConstraints();
 
   Status AddInspectionConstraints(
       const std::unordered_set<Node*>& inspection_required);
@@ -355,7 +369,8 @@ class ColocationGraph {
   PlacerInspectionRequiredOpChecker inspection_required_checker_;
   const DeviceSet& device_set_;
   const std::vector<DeviceType> device_types_;
-  const Device* default_device_;
+  const DeviceNameUtils::ParsedName local_address_spec_;
+  const Device* default_local_device_;
   const bool allow_soft_placement_;
   const bool log_device_placement_;
 

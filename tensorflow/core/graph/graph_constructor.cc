@@ -24,6 +24,7 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
@@ -56,7 +57,8 @@ namespace {
 static constexpr const bool kDoNotCheckDuplicates = true;
 
 inline bool IsMerge(const NodeDef& node_def) {
-  return node_def.op() == "Merge" || node_def.op() == "RefMerge";
+  return node_def.op() == "Merge" || node_def.op() == "RefMerge" ||
+         node_def.op() == "_XlaMerge";
 }
 
 inline bool IsNextIteration(const NodeDef& node_def) {
@@ -66,12 +68,23 @@ inline bool IsNextIteration(const NodeDef& node_def) {
 
 bool IsValidNodeName(StringPiece s, bool allow_internal_ops) {
   using ::tensorflow::strings::Scanner;
-  return Scanner(s)
+  Scanner scanner(s);
+  scanner
       .One(allow_internal_ops ? Scanner::LETTER_DIGIT_DOT_UNDERSCORE
                               : Scanner::LETTER_DIGIT_DOT)
-      .Any(Scanner::LETTER_DIGIT_DASH_DOT_SLASH_UNDERSCORE)
-      .Eos()
-      .GetResult();
+      .Any(Scanner::LETTER_DIGIT_DASH_DOT_SLASH_UNDERSCORE);
+
+  while (true) {
+    if (!scanner.GetResult())  // Some error in previous iteration.
+      return false;
+    if (scanner.empty())  // No error, but nothing left, good.
+      return true;
+
+    // Absorb another piece, starting with a '>'
+    scanner.One(Scanner::RANGLE)
+        .One(Scanner::LETTER_DIGIT_DOT)
+        .Any(Scanner::LETTER_DIGIT_DASH_DOT_SLASH_UNDERSCORE);
+  }
 }
 
 class GraphConstructor {
@@ -81,7 +94,9 @@ class GraphConstructor {
         : allow_internal_ops(in.allow_internal_ops),
           expect_device_spec(in.expect_device_spec),
           importing(false),
-          validate_colocation_constraints(false) {}
+          validate_nodes(in.validate_nodes),
+          validate_colocation_constraints(false),
+          add_default_attributes(in.add_default_attributes) {}
     Options(const ImportGraphDefOptions& in)  // NOLINT(runtime/explicit)
         : allow_internal_ops(false),
           expect_device_spec(false),
@@ -96,6 +111,7 @@ class GraphConstructor {
           return_tensors(in.return_tensors.begin(), in.return_tensors.end()),
           return_nodes(in.return_nodes),
           importing(true),
+          validate_nodes(true),
           validate_colocation_constraints(in.validate_colocation_constraints),
           validate_shape(in.validate_shape),
           default_device(in.default_device) {}
@@ -121,8 +137,16 @@ class GraphConstructor {
     // applicable to ConvertGraphDefToGraph as well, so make an attempt to
     // remove this.
     bool importing;
+    // If true, validates that nodes being converted have all expected attrs
+    // set and no unknown attrs set by calling ValidateNodeDef().
+    // `validate_nodes` is always true when `importing` is set.
+    bool validate_nodes;
     bool validate_colocation_constraints;
     bool validate_shape = true;
+
+    // If true, GraphConstructor will add attributes with their default
+    // value to the Node when they are missing from the NodeDef.
+    bool add_default_attributes = true;
 
     string default_device;
   };
@@ -434,6 +458,33 @@ class NodeDefMovingGraphConstructor : public GraphConstructor {
   std::vector<bool> is_consumed_;
 };
 
+bool ForwardCompatibilityWindowPassed(const VersionDef& versions) {
+  // TF_GRAPH_DEF_VERSION is incremented daily.
+  // TF has a 3 week forward compatibility guarantee.
+  return (versions.producer() - TF_GRAPH_DEF_VERSION) > 21;
+}
+
+Status MaybeAppendVersionWarning(const VersionDef* versions,
+                                 const Status& import_status) {
+  if (versions && ForwardCompatibilityWindowPassed(*versions)) {
+    return Status(
+        import_status.code(),
+        absl::StrCat(
+            "Converting GraphDef to Graph has failed. The binary trying to "
+            "import the GraphDef was built when GraphDef version was ",
+            TF_GRAPH_DEF_VERSION,
+            ". The GraphDef was produced by a binary built when GraphDef "
+            "version was ",
+            versions->producer(),
+            ". The difference between these versions is larger than "
+            "TensorFlow's forward compatibility guarantee. The following error "
+            "might be due to the binary trying to import the GraphDef being "
+            "too old: ",
+            import_status.error_message()));
+  }
+  return import_status;
+}
+
 /* static */ Status GraphConstructor::Construct(
     const Options& opts, NodeDefSlice node_defs, const VersionDef* versions,
     const FunctionDefLibrary* library, Graph* g, ShapeRefiner* refiner,
@@ -448,8 +499,11 @@ class NodeDefMovingGraphConstructor : public GraphConstructor {
   NodeDefCopyingGraphConstructor c(opts, node_defs, versions, library, g,
                                    refiner, return_tensors, return_nodes,
                                    missing_unused_input_map_keys);
-  const Status s = c.TryImport();
-  if (!s.ok()) c.Undo();
+  Status s = c.TryImport();
+  if (!s.ok()) {
+    c.Undo();
+    s = MaybeAppendVersionWarning(versions, s);
+  }
   return s;
 }
 
@@ -461,11 +515,15 @@ class NodeDefMovingGraphConstructor : public GraphConstructor {
   TF_RETURN_IF_ERROR(CheckVersions(graph_def.versions(), TF_GRAPH_DEF_VERSION,
                                    TF_GRAPH_DEF_VERSION_MIN_PRODUCER,
                                    "GraphDef", "graph"));
+  VersionDef version_def = graph_def.versions();
   NodeDefMovingGraphConstructor c(opts, std::move(graph_def), g, refiner,
                                   return_tensors, return_nodes,
                                   missing_unused_input_map_keys);
-  const Status s = c.TryImport();
-  if (!s.ok()) c.Undo();
+  Status s = c.TryImport();
+  if (!s.ok()) {
+    c.Undo();
+    s = MaybeAppendVersionWarning(&version_def, s);
+  }
   return s;
 }
 
@@ -728,9 +786,9 @@ Status GraphConstructor::ValidateShape(Node* node) {
   if (!opts_.importing || !opts_.validate_shape) return Status::OK();
   TF_RETURN_IF_ERROR(refiner_->AddNode(node));
   // For nodes with the _output_shapes attribute, override the shape.
-  std::vector<TensorShapeProto> shape_attrs;
+  std::vector<const TensorShapeProto*> shape_attrs;
   const char* kAttrName = "_output_shapes";
-  if (!GetNodeAttr(node->attrs(), kAttrName, &shape_attrs).ok()) {
+  if (!TryGetNodeAttr(node->attrs(), kAttrName, &shape_attrs)) {
     // No _output_shapes attribute, the AddNode call above was sufficient.
     return Status::OK();
   }
@@ -753,7 +811,7 @@ Status GraphConstructor::ValidateShape(Node* node) {
                  << " outputs. Output shapes may be inaccurate.";
   }
   for (int i = 0; i < node->num_outputs(); ++i) {
-    const TensorShapeProto& p = shape_attrs[i];
+    const TensorShapeProto& p = *shape_attrs[i];
     shape_inference::ShapeHandle h;
     Status s = ic->MakeShapeFromShapeProto(p, &h);
     if (!s.ok()) {
@@ -772,7 +830,6 @@ Status GraphConstructor::ValidateShape(Node* node) {
       // This is an escape hatch that allows us to correct shape
       // functions that are not critical to correct execution but
       // would cause graphs to fail if imported after correcting.
-      //
       const string& op = node->type_string();
       const std::vector<string> whitelist = {
           // To be removed after 2017/03/08.
@@ -991,11 +1048,10 @@ void GraphConstructor::UpdateUniquifiedColocationNames() {
     Node* node = pair.second.node;
     if (node == nullptr) continue;
     std::vector<string> coloc_values;
-    Status status =
-        GetNodeAttr(node->attrs(), kColocationAttrName, &coloc_values);
-    if (!status.ok()) continue;
+    if (!TryGetNodeAttr(node->attrs(), kColocationAttrName, &coloc_values))
+      continue;
     bool updated = false;
-    for (int i = 0; i < coloc_values.size(); ++i) {
+    for (size_t i = 0; i < coloc_values.size(); ++i) {
       StringPiece val(coloc_values[i]);
       if (absl::ConsumePrefix(&val, kColocationGroupPrefix)) {
         auto name_pair = uniquified_names_.find(string(val));
@@ -1006,7 +1062,7 @@ void GraphConstructor::UpdateUniquifiedColocationNames() {
       }
     }
     if (updated) {
-      node->AddAttr(kColocationAttrName, coloc_values);
+      node->AddAttr(kColocationAttrName, std::move(coloc_values));
     }
   }
 }
@@ -1182,10 +1238,19 @@ Status GraphConstructor::Convert() {
       }
 
       if (src_node != nullptr && src_index >= src_node->num_outputs()) {
-        return errors::InvalidArgument(
-            "Node '", node_def.name(), "': Connecting to invalid output ",
-            tensor_id.index(), " of source node ", tensor_id.node(),
-            " which has ", src_node->num_outputs(), " outputs");
+        std::ostringstream out;
+        out << "Node '" << node_def.name() << "': Connecting to invalid output "
+            << tensor_id.index() << " of source node " << tensor_id.node()
+            << " which has " << src_node->num_outputs() << " outputs.";
+
+        if (src_node->type_string() == "If" ||
+            src_node->type_string() == "StatelessIf" ||
+            src_node->type_string() == "While" ||
+            src_node->type_string() == "StatelessWhile") {
+          out << " Try using "
+              << "tf.compat.v1.experimental.output_all_intermediates(True).";
+        }
+        return errors::InvalidArgument(out.str());
       }
 
       inputs.emplace_back(string(tensor_id.node()), src_node, src_index);
@@ -1207,8 +1272,22 @@ Status GraphConstructor::Convert() {
       if (opts_.uniquify_names && (prefix_.empty() || !opts_.uniquify_prefix)) {
         UniquifyNames(input_already_exists, &node_def);
       }
-      TF_RETURN_IF_ERROR(ModifyNodeDefForImport(&node_def));
     }
+
+    if (opts_.importing) {
+      TF_RETURN_IF_ERROR(ModifyNodeDefForImport(&node_def));
+    } else {
+      const OpDef* op_def;
+      TF_RETURN_IF_ERROR(
+          g_->op_registry()->LookUpOpDef(node_def.op(), &op_def));
+      if (opts_.add_default_attributes) {
+        AddDefaultsToNodeDef(*op_def, &node_def);
+      }
+      if (opts_.validate_nodes) {
+        TF_RETURN_IF_ERROR(ValidateNodeDef(node_def, *op_def));
+      }
+    }
+
     TF_RETURN_IF_ERROR(MakeNode(std::move(node_def), &node));
 
     if (opts_.importing) {

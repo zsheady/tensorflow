@@ -44,7 +44,8 @@ class NormalizationTest(test.TestCase, parameterized.TestCase):
           ],
           mode=["graph"],
           fused=[True, False]))
-  def disabled_testBNWithZeroBatchInput(self, distribution, fused):
+  def testBNWithZeroBatchInputGraph(self, distribution, fused):
+    distribution.extended.experimental_enable_get_next_as_optional = True
     with distribution.scope(), self.cached_session() as sess:
       bn_list = []
       inputs = np.random.random((0, 4, 4, 3)) + 100
@@ -115,6 +116,7 @@ class NormalizationTest(test.TestCase, parameterized.TestCase):
           mode=["eager"],
           fused=[True, False]))
   def testBNWithZeroBatchInput(self, distribution, fused):
+    distribution.extended.experimental_enable_get_next_as_optional = True
     with distribution.scope():
       inputs = np.random.random((0, 4, 4, 3)).astype(np.float32) + 100
       targets = np.random.random((0, 4, 4, 3)).astype(np.float32)
@@ -132,8 +134,7 @@ class NormalizationTest(test.TestCase, parameterized.TestCase):
           optimizer.apply_gradients(zip(grads, bn.variables))
           return loss
 
-        return distribution.experimental_run_v2(
-            step_fn, args=(inputs, targets))
+        return distribution.run(step_fn, args=(inputs, targets))
 
       for _ in range(100):
         np_output = train_step().numpy()
@@ -151,8 +152,7 @@ class NormalizationTest(test.TestCase, parameterized.TestCase):
           outputs = bn.apply(inputs, training=False)
           return outputs
 
-        return distribution.experimental_run_v2(
-            step_fn, args=(inputs,))
+        return distribution.run(step_fn, args=(inputs,))
 
       # Test inference.
       self.assertAllEqual(np.zeros(shape=(0, 4, 4, 3), dtype=np.float32),

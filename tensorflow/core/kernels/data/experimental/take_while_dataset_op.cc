@@ -26,19 +26,15 @@ limitations under the License.
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
-
-// See documentation in ../../ops/dataset_ops.cc for a high-level
-// description of the following op.
 
 class TakeWhileDatasetOp : public UnaryDatasetOpKernel {
  public:
   explicit TakeWhileDatasetOp(OpKernelConstruction* ctx)
       : UnaryDatasetOpKernel(ctx) {
-    FunctionMetadata::Params params;
-    params.is_multi_device_function = true;
-    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "predicate", params,
-                                                 &func_metadata_));
+    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(
+                            ctx, "predicate", /*params=*/{}, &func_metadata_));
     OP_REQUIRES(ctx, func_metadata_->short_circuit_info().indices.size() <= 1,
                 errors::InvalidArgument(
                     "predicate function has more than one return value."));
@@ -86,6 +82,11 @@ class TakeWhileDatasetOp : public UnaryDatasetOpKernel {
 
     int64 Cardinality() const override { return kUnknownCardinality; }
 
+    Status CheckExternalState() const override {
+      TF_RETURN_IF_ERROR(captured_func_->CheckExternalState());
+      return input_->CheckExternalState();
+    }
+
    protected:
     Status AsGraphDefInternal(SerializationContext* ctx,
                               DatasetGraphDefBuilder* b,
@@ -120,7 +121,7 @@ class TakeWhileDatasetOp : public UnaryDatasetOpKernel {
 
       Status Initialize(IteratorContext* ctx) override {
         TF_RETURN_IF_ERROR(
-            dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+            dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
         return dataset()->captured_func_->Instantiate(
             ctx, &instantiated_captured_func_);
       }
@@ -165,10 +166,13 @@ class TakeWhileDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_func_->CheckExternalState()));
         mutex_lock l(mu_);
         if (input_impl_)
-          TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
+          TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
         else
           TF_RETURN_IF_ERROR(
               writer->WriteScalar(full_name("input_impls_empty"), ""));
@@ -187,7 +191,7 @@ class TakeWhileDatasetOp : public UnaryDatasetOpKernel {
 
      private:
       mutex mu_;
-      std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
+      std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
     };
 
@@ -207,5 +211,6 @@ REGISTER_INPUT_COLOCATION_EXEMPTION("TakeWhileDataset");
 REGISTER_INPUT_COLOCATION_EXEMPTION("ExperimentalTakeWhileDataset");
 
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

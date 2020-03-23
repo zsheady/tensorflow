@@ -18,6 +18,8 @@ limitations under the License.
 
 #include <cmath>
 #include <complex>
+#include <iostream>
+#include <limits>
 
 #include "tensorflow/core/platform/byte_order.h"
 
@@ -51,6 +53,10 @@ struct bfloat16 {
     bfloat16 output;
     if (float_isnan(v)) {
       output.value = NAN_VALUE;
+      return output;
+    } else if (std::fabs(v) < std::numeric_limits<float>::min()) {
+      // Flush denormal to +/- 0.
+      output.value = std::signbit(v) ? 0x8000 : 0;
       return output;
     }
     const uint16_t* p = reinterpret_cast<const uint16_t*>(&v);
@@ -195,6 +201,9 @@ struct bfloat16 {
       // qNaN magic: All exponent bits set + most significant bit of fraction
       // set.
       output.value = 0x7fc0;
+    } else if (std::fabs(v) < std::numeric_limits<float>::min()) {
+      // Flush denormal to +/- 0.0
+      output.value = std::signbit(v) ? 0x8000 : 0;
     } else {
       // Fast rounding algorithm that rounds a half value to nearest even. This
       // reduces expected error when we convert a large number of floats. Here
@@ -494,7 +503,13 @@ inline bool isnan(const bfloat16& a) { return std::isnan(float(a)); }
 inline bool isfinite(const bfloat16& a) { return std::isfinite(float(a)); }
 inline bfloat16 abs(const bfloat16& a) { return bfloat16(std::abs(float(a))); }
 inline bfloat16 exp(const bfloat16& a) { return bfloat16(std::exp(float(a))); }
+inline bfloat16 expm1(const bfloat16& a) {
+  return bfloat16(std::expm1(float(a)));
+}
 inline bfloat16 log(const bfloat16& a) { return bfloat16(std::log(float(a))); }
+inline bfloat16 log1p(const bfloat16& a) {
+  return bfloat16(std::log1p(float(a)));
+}
 inline bfloat16 log10(const bfloat16& a) {
   return bfloat16(std::log10(float(a)));
 }
